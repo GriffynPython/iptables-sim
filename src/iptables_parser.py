@@ -1,5 +1,5 @@
 import re
-
+import shlex
 def parse_iptables_save(iptables_save_output):
     """Parses iptables-save output into a Python data structure."""
 
