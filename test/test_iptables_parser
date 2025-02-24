@@ -1,0 +1,146 @@
+import unittest
+import shlex  # Import shlex here as well
+import sys
+from pathlib import Path
+
+# Get the absolute path to the project's root directory
+PROJECT_ROOT = Path(__file__).parent.parent  # Two levels up from test file
+
+# Add the 'src' directory to the Python path
+sys.path.insert(0, str(PROJECT_ROOT / "src"))  # Add the src folder to the python path
+
+from src.iptables_parser import (
+    parse_iptables_save,
+    parse_rule,
+)  # Now import should work
+
+
+class TestIptablesParser(unittest.TestCase):
+
+    def test_parse_iptables_save_empty(self):
+        iptables_save_output = ""
+        parsed_rules = parse_iptables_save(iptables_save_output)
+        self.assertEqual(parsed_rules, {})  # Expect empty dictionary
+
+    def test_parse_iptables_save_basic(self):
+        iptables_save_output = """
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -p tcp --dport 80 -j ACCEPT
+COMMIT
+"""
+        parsed_rules = parse_iptables_save(iptables_save_output)
+        expected_rules = {
+            "filter": {
+                "INPUT": {
+                    "policy": "ACCEPT",
+                    "rules": [
+                        {
+                            "rule": "-A INPUT -p tcp --dport 80 -j ACCEPT",
+                            "matches": [
+                                {"option": "p", "value": "tcp"},
+                                {"option": "dport", "value": "80"},
+                            ],
+                            "actions": [{"type": "jump", "target": "ACCEPT"}],
+                        }
+                    ],
+                }
+            }
+        }
+        self.assertEqual(parsed_rules, expected_rules)
+
+    def test_parse_iptables_save_multiple_rules(self):
+        iptables_save_output = """
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -p tcp --dport 80 -j ACCEPT
+-A INPUT -p udp --dport 53 -j ACCEPT
+COMMIT
+"""
+        parsed_rules = parse_iptables_save(iptables_save_output)
+        self.assertEqual(
+            len(parsed_rules["filter"]["INPUT"]["rules"]), 2
+        )  # Check for 2 rules
+
+    def test_parse_iptables_save_multiple_chains(self):
+        iptables_save_output = """
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -p tcp --dport 80 -j ACCEPT
+:FORWARD DROP [0:0]
+COMMIT
+"""
+        parsed_rules = parse_iptables_save(iptables_save_output)
+        self.assertTrue("INPUT" in parsed_rules["filter"])
+        self.assertTrue("FORWARD" in parsed_rules["filter"])
+
+    def test_parse_iptables_save_nat_table(self):
+        iptables_save_output = """
+*nat
+:PREROUTING ACCEPT [0:0]
+-A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8080
+COMMIT
+"""
+        parsed_rules = parse_iptables_save(iptables_save_output)
+        self.assertTrue("nat" in parsed_rules)
+
+    def test_parse_rule_basic(self):
+        rule_line = "-A INPUT -p tcp --dport 80 -j ACCEPT"
+        parsed_rule = parse_rule(rule_line)
+        self.assertEqual(
+            parsed_rule["matches"],
+            [{"option": "p", "value": "tcp"}, {"option": "dport", "value": "80"}],
+        )
+        self.assertEqual(parsed_rule["actions"], [{"type": "jump", "target": "ACCEPT"}])
+
+    def test_parse_rule_with_state(self):
+        rule_line = "-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT"
+        parsed_rule = parse_rule(rule_line)
+        self.assertEqual(
+            parsed_rule["matches"],
+            [{"extension": "state", "state": "RELATED,ESTABLISHED"}],
+        )
+        self.assertEqual(parsed_rule["actions"], [{"type": "jump", "target": "ACCEPT"}])
+
+    def test_parse_rule_with_conntrack(self):
+        rule_line = "-A INPUT -m conntrack --ctstate DNAT -j ACCEPT"
+        parsed_rule = parse_rule(rule_line)
+        self.assertEqual(
+            parsed_rule["matches"], [{"extension": "conntrack", "ctstate": "DNAT"}]
+        )
+        self.assertEqual(parsed_rule["actions"], [{"type": "jump", "target": "ACCEPT"}])
+
+    def test_parse_rule_with_goto(self):
+        rule_line = "-A INPUT -g mychain"
+        parsed_rule = parse_rule(rule_line)
+        self.assertEqual(
+            parsed_rule["actions"], [{"type": "goto", "target": "mychain"}]
+        )
+
+    def test_parse_rule_with_error(self):
+        rule_line = '-A INPUT -p tcp --dport 80 -j "ACCEPT'  # Unbalanced quote
+        parsed_rule = parse_rule(rule_line)
+        self.assertTrue("error" in parsed_rule)  # Check for error key
+
+    def test_parse_rule_no_value(self):
+        rule_line = "-A INPUT -p tcp -j ACCEPT"
+        parsed_rule = parse_rule(rule_line)
+        self.assertEqual(parsed_rule["matches"], [{"option": "p", "value": "tcp"}])
+        self.assertEqual(parsed_rule["actions"], [{"type": "jump", "target": "ACCEPT"}])
+
+    def test_parse_rule_multi_options(self):
+        rule_line = "-A INPUT -p tcp --dport 80 --sport 1024:65535 -j ACCEPT"
+        parsed_rule = parse_rule(rule_line)
+        self.assertEqual(
+            parsed_rule["matches"],
+            [
+                {"option": "p", "value": "tcp"},
+                {"option": "dport", "value": "80"},
+                {"option": "sport", "value": "1024:65535"},
+            ],
+        )
+        self.assertEqual(parsed_rule["actions"], [{"type": "jump", "target": "ACCEPT"}])
+
+
+if __name__ == "__main__":
+    unittest.main()
